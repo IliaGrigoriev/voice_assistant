@@ -1,0 +1,30 @@
+# data.py
+# Sample natural-language sentences for intent recognition.
+
+sentences = [
+    "What's the weather like today?",
+    "Will it rain tomorrow?",
+    "Set an alarm for 7 AM.",
+    "Remind me to call my doctor.",
+    "What time is it?",
+    "Play some relaxing music.",
+    "Stop the music.",
+    "Turn up the volume.",
+    "Find a restaurant nearby.",
+    "Book a table for two tonight.",
+    "How far is Berlin from Munich?",
+    "Navigate to the nearest gas station.",
+    "Tell me a joke.",
+    "What is the capital of France?",
+    "Search for information about neural networks.",
+    "Open my calendar.",
+    "Schedule a meeting for Monday.",
+    "Cancel my appointment.",
+    "Send a message to John.",
+    "Read my latest emails.",
+    "Turn off the lights.",
+    "Increase the room temperature.",
+    "Hello, how are you?",
+    "Thank you for your help.",
+    "Goodbye!",
+]

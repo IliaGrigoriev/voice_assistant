@@ -25,13 +25,12 @@
                        ▼
               Intent Class + Slots
 """
-from predicate_graphs import PredicateGraphs
-from nested_intents   import NestedIntents
-from spacy_action_graph import SpacyActionGraph
-from semantic_action_graph import SemanticActionGraph
+from .predicate_graphs import PredicateGraphs
+from .nested_intents import NestedIntents
+from .spacy_action_graph import SpacyActionGraph
+from .semantic_action_graph import SemanticActionGraph
 
-if __name__ == "__main__":
-   sentence = "Remind John to call Mary tomorrow."
+def parse(sentence = "Remind John to call Mary tomorrow."):
    parser = PredicateGraphs()
    nested_intents = NestedIntents()
    spacy_action_graph = SpacyActionGraph()
@@ -48,5 +47,7 @@ if __name__ == "__main__":
        root_action=decomposed_intents["id"],
    )
    print(semantic_action_graph.format(combined_graph))
+   return semantic_action_graph
 
-   
+if __name__ == "__main__":
+   parse()

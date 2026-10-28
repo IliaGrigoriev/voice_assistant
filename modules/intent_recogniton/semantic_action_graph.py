@@ -42,6 +42,82 @@ class SemanticActionGraph:
             return "PERSON"
         return None
 
+    def _nested_node_type(self, role: str, predicate: str | None = None) -> str:
+        role = role.removeprefix(":")
+        if predicate == "mass-quantity":
+            return "measurement"
+        if role == "quant":
+            return "quantity"
+        if role == "unit":
+            return "unit"
+        if role in {"time", "year", "month", "day", "weekday"}:
+            return "time"
+        return "entity"
+
+    def _add_nested_arguments(
+        self,
+        parent_id: str,
+        arguments: dict,
+        nodes: dict,
+        edges: list[dict],
+        expanded: set[str],
+        edge_keys: set[tuple],
+    ) -> None:
+        if parent_id in expanded:
+            return
+        expanded.add(parent_id)
+
+        for role, targets in arguments.items():
+            if role == ":name":
+                continue
+
+            relation = role.removeprefix(":")
+            for index, target in enumerate(targets):
+                if isinstance(target, dict):
+                    target_id = target.get("id") or target.get("reference")
+                    if not target_id:
+                        continue
+                    predicate = target.get("predicate")
+                    label = (
+                        predicate.replace("-", " ")
+                        if predicate
+                        else target_id
+                    )
+                    nodes.setdefault(target_id, {
+                        "id": target_id,
+                        "type": self._nested_node_type(role, predicate),
+                        "label": label,
+                    })
+                    child_arguments = target.get("arguments", {})
+                else:
+                    role_id = relation.replace("-", "_")
+                    target_id = f"{parent_id}_{role_id}_{index}"
+                    nodes.setdefault(target_id, {
+                        "id": target_id,
+                        "type": self._nested_node_type(role),
+                        "label": str(target).strip('"'),
+                    })
+                    child_arguments = {}
+
+                edge_key = (parent_id, relation, target_id)
+                if edge_key not in edge_keys:
+                    edges.append({
+                        "source": parent_id,
+                        "relation": relation,
+                        "target": target_id,
+                    })
+                    edge_keys.add(edge_key)
+
+                if child_arguments:
+                    self._add_nested_arguments(
+                        target_id,
+                        child_arguments,
+                        nodes,
+                        edges,
+                        expanded,
+                        edge_keys,
+                    )
+
     def combine(
         self,
         amr_actions: list[dict],
@@ -61,13 +137,30 @@ class SemanticActionGraph:
             for action in amr_actions
         }
         edges = []
+        edge_keys = set()
+        expanded = set()
 
         for action in amr_actions:
-            for argument in action["arguments"]:
+            for index, argument in enumerate(action["arguments"]):
                 role = self.role_map.get(action["action"], {}).get(
                     argument["role"], argument["role"].removeprefix(":")
                 )
-                if "value" in argument or role == "requester":
+                if role == "requester":
+                    continue
+
+                if "value" in argument:
+                    value_id = f"{action['id']}_{role}_{index}"
+                    nodes[value_id] = {
+                        "id": value_id,
+                        "type": self._nested_node_type(argument["role"]),
+                        "label": str(argument["value"]).strip('"'),
+                    }
+                    edges.append({
+                        "source": action["id"],
+                        "relation": role,
+                        "target": value_id,
+                    })
+                    edge_keys.add((action["id"], role, value_id))
                     continue
 
                 target_node = {
@@ -81,13 +174,27 @@ class SemanticActionGraph:
                 if ner_type:
                     target_node["ner_type"] = ner_type
                 nodes.setdefault(argument["target"], target_node)
-                edges.append({
+                edge = {
                     "source": action["id"],
                     "relation": (
                         "nested_action" if argument["type"] == "action" else role
                     ),
                     "target": argument["target"],
-                })
+                }
+                edge_key = (edge["source"], edge["relation"], edge["target"])
+                if edge_key not in edge_keys:
+                    edges.append(edge)
+                    edge_keys.add(edge_key)
+
+                if argument["type"] != "action":
+                    self._add_nested_arguments(
+                        argument["target"],
+                        argument.get("arguments", {}),
+                        nodes,
+                        edges,
+                        expanded,
+                        edge_keys,
+                    )
 
         actor_targets = {
             edge["target"] for edge in edges
@@ -105,8 +212,11 @@ class SemanticActionGraph:
             edge["target"] for edge in edges
         }
 
+        root = root_action if root_action in nodes else (
+            amr_actions[0]["id"] if amr_actions else None
+        )
         return {
-            "root": root_action or (amr_actions[0]["id"] if amr_actions else None),
+            "root": root,
             "nodes": [node for node_id, node in nodes.items() if node_id in referenced],
             "edges": edges,
         }

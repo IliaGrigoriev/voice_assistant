@@ -103,6 +103,7 @@ class NestedIntents:
                         "target": target_id,
                         "label": label,
                         "type": "action" if target_id in action_ids else "entity",
+                        "arguments": target.get("arguments", {}),
                     })
 
             actions.append({

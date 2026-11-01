@@ -14,22 +14,44 @@ class Dataloader:
 
     # Get batches
     # ----------------------------------------------------------------
-    def get_batches(self, batch_size, num_workers=16):
+    def get_batches(
+        self,
+        batch_size,
+        num_workers=16,
+        dataset_url="train-clean-100",
+        shuffle=True,
+    ):
         dataset = torchaudio.datasets.LIBRISPEECH(
             root=str(LIBRI_SPEECH),
-            url="train-clean-100",
+            url=dataset_url,
             download=False,
         )
 
         return TorchDataLoader(
             dataset,
             batch_size  = batch_size,
-            shuffle     = True,
+            shuffle     = shuffle,
             collate_fn  = self._collate_batch,
             num_workers = num_workers,
             pin_memory  = torch.cuda.is_available(),
             persistent_workers = num_workers > 0,
             prefetch_factor = 2 if num_workers > 0 else None,
+        )
+
+    def get_train_batches(self, batch_size, num_workers=16):
+        return self.get_batches(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            dataset_url="train-clean-100",
+            shuffle=True,
+        )
+
+    def get_validation_batches(self, batch_size, num_workers=16):
+        return self.get_batches(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            dataset_url="dev-clean",
+            shuffle=False,
         )
     
     # Collate batch

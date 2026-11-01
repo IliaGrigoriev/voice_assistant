@@ -5,7 +5,7 @@ _VSA_FOLDER = os.path.join("/home", "ilia", "Data", "vsa")
 
 STT_MODEL = os.path.join(
     _VSA_FOLDER,
-    "stt_model.pt",
+    "stt_model_exp.pt",
 )
 
 LIBRI_SPEECH = os.path.join(

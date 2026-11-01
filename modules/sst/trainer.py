@@ -1,106 +1,86 @@
+import optuna
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from dataloader import Dataloader
-from stt_model import STTModel
-from const import STT_MODEL
-
 VOCABULARY = ["<blank>", " ", "'", *"abcdefghijklmnopqrstuvwxyz"]
-VOCAB_SIZE = len(VOCABULARY) # 29
-HOP_LENGTH = 160 # 10 ms at a 16 kHz sample rate
+VOCAB_SIZE = len(VOCABULARY)
+HOP_LENGTH = 160
+BLANK_ID = VOCABULARY.index("<blank>")
 
-# Calculate output lengths
-# -----------------------------------------------------------------------
-def calculate_output_lengths(waveform_lengths, hop_length=160):
-    # MelSpectrogram uses center=True by default, so the number of valid
-    # spectrogram frames is floor(audio_samples / hop_length) + 1.
-    lengths = waveform_lengths // hop_length + 1
 
-    # Conv2d(kernel_size=3, stride=2, padding=1) changes length L to
-    # floor((L + 1) / 2), equivalent to (L + 1) // 2.
-    lengths = (lengths + 1) // 2
-    lengths = (lengths + 1) // 2
+class Trainer:
 
-    return lengths.to(dtype=torch.long)
+    def __init__(self, model, optimizer, device, hop_length, blank_id):
+        self.model = model
+        self.optimizer = optimizer
+        self.device = device
+        self.hop_length = hop_length
+        self.criterion = nn.CTCLoss(blank=blank_id, zero_infinity=True)
 
-# Main
-# -----------------------------------------------------------------------
-if __name__ == "__main__":
-    device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-    )
-    
-    # Build model
-    model = STTModel(
-        vocab_size = VOCAB_SIZE,
-        hop_length = HOP_LENGTH,
-        device     = device,
-    ).to(device)
+    def _calculate_output_lengths(self, waveform_lengths):
+        lengths = waveform_lengths // self.hop_length + 1
+        lengths = (lengths + 1) // 2
+        lengths = (lengths + 1) // 2
+        return lengths.to(dtype=torch.long)
 
-    # Compute the loss
-    BLANK_ID = VOCABULARY.index("<blank>")  # 0
-    criterion = nn.CTCLoss(
-        blank         = BLANK_ID,
-        zero_infinity = True,
-    )
+    def _calculate_loss(self, batch):
+        waveforms = batch["waveforms"].to(self.device, non_blocking=True)
+        targets = batch["encoded_transcripts"].to(
+            self.device,
+            non_blocking=True,
+        )
 
-    # Prepare data for training
-    data_loader = Dataloader(VOCABULARY)
-    batches = data_loader.get_batches(batch_size = 8)
+        logits = self.model(waveforms)
+        log_probs = logits.log_softmax(dim=-1).transpose(0, 1)
+        output_lengths = self._calculate_output_lengths(
+            batch["waveform_lengths"]
+        )
+        return self.criterion(
+            log_probs,
+            targets,
+            output_lengths,
+            batch["transcript_lengths"],
+        )
 
-    # Model training
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=1e-4,
-        weight_decay=1e-2,
-    )  
-
-    NUMBER_OF_EPOCHS = 75
-    for epoch in range(NUMBER_OF_EPOCHS):
-        model.train() # set the model into the training mode
+    def train_epoch(self, loader):
+        self.model.train()
         total_loss = 0.0
-        # Train
-        progress = tqdm(
-            batches,
-            desc=f"Epoch {epoch + 1}/{NUMBER_OF_EPOCHS}",
-            unit="batch",
-        )
-        for batch in progress:
-            waveforms = batch["waveforms"].to(device, non_blocking=True)
-            targets = batch["encoded_transcripts"].to(device, non_blocking=True)
-            
-            # Length tensors can remain on CPU for maximum CTCLoss compatibility.
-            waveform_lengths = batch["waveform_lengths"]
-            target_lengths   = batch["transcript_lengths"]
 
-            # Pass features through the rest of the model.
-            logits = model(waveforms)
-
-            # Calculate the log-probabilities for each character.
-            log_probs = logits.log_softmax(dim=-1).transpose(0, 1)
-            output_lengths = calculate_output_lengths(
-                waveform_lengths,
-                HOP_LENGTH,
-            )
-            loss = criterion(
-                log_probs,
-                targets,
-                output_lengths,
-                target_lengths,
-            )
-            
-            optimizer.zero_grad()
+        for batch in tqdm(loader, unit="batch", leave=False):
+            self.optimizer.zero_grad(set_to_none=True)
+            loss = self._calculate_loss(batch)
             loss.backward()
-            optimizer.step()
-    
-            batch_loss = loss.item()
-            total_loss += batch_loss
-            progress.set_postfix(loss=f"{batch_loss:.4f}")
+            self.optimizer.step()
+            total_loss += loss.item()
 
-        average_loss = total_loss / len(batches)
-        print(
-            f"Epoch {epoch + 1}/{NUMBER_OF_EPOCHS}, "
-            f"loss: {average_loss:.4f}"
-        )
-    torch.save(model.state_dict(), STT_MODEL)
+        return total_loss / len(loader)
+
+    @torch.inference_mode()
+    def validate_epoch(self, loader):
+        self.model.eval()
+        total_loss = 0.0
+
+        for batch in loader:
+            total_loss += self._calculate_loss(batch).item()
+
+        return total_loss / len(loader)
+
+    def fit(self, train_loader, validation_loader, epochs, trial=None):
+        validation_loss = float("inf")
+
+        for epoch in range(epochs):
+            train_loss = self.train_epoch(train_loader)
+            validation_loss = self.validate_epoch(validation_loader)
+            print(
+                f"Epoch {epoch + 1}/{epochs}, "
+                f"train loss: {train_loss:.4f}, "
+                f"validation loss: {validation_loss:.4f}"
+            )
+
+            if trial is not None:
+                trial.report(validation_loss, step=epoch)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
+        return validation_loss

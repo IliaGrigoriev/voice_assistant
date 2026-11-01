@@ -6,9 +6,10 @@ import torchaudio
 class STTModel(nn.Module):
 
     # Constructor
-    def __init__(self, vocab_size, hop_length, device):
+    def __init__(self, vocab_size, hop_length, device, dropout=0.1):
         super().__init__()
         self._device = device
+        self._dropout = dropout
         self._mel = self.audio_to_log_mel(hop_length)
         self._cnn, self._cnn_projection = self.build_cnn()
         self._conformer = self.conformer_layer()
@@ -65,7 +66,7 @@ class STTModel(nn.Module):
             ffn_dim                    = 1024,
             num_layers                 = 6,
             depthwise_conv_kernel_size = 31,
-            dropout                    = 0.1
+            dropout                    = self._dropout
         )
 
     # --------------------------------------------------

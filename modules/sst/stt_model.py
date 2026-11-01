@@ -6,11 +6,12 @@ import torchaudio
 class STTModel(nn.Module):
 
     # Constructor
-    def __init__(self, vocab_size, hop_length):
+    def __init__(self, vocab_size, hop_length, device):
         super().__init__()
+        self._device = device
         self._mel = self.audio_to_log_mel(hop_length)
         self._cnn, self._cnn_projection = self.build_cnn()
-        self._transformer = self.transformer()
+        self._conformer = self.conformer_layer()
         self._output = self.hidden_to_char_logits(vocab_size)
 
     # --------------------------------------------------
@@ -55,20 +56,16 @@ class STTModel(nn.Module):
         return cnn, cnn_projection
 
     # --------------------------------------------------
-    # 3. Transformer
+    # 3. Conformer encoder
     # --------------------------------------------------
-    def transformer(self):
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model         = 256,
-            nhead           = 4,
-            dim_feedforward = 1024,
-            dropout         = 0.1,
-            batch_first     = True
-        )
-
-        return nn.TransformerEncoder(
-            encoder_layer,
-            num_layers = 6
+    def conformer_layer(self):
+        return torchaudio.models.Conformer(
+            input_dim                  = 256,
+            num_heads                  = 4,
+            ffn_dim                    = 1024,
+            num_layers                 = 6,
+            depthwise_conv_kernel_size = 31,
+            dropout                    = 0.1
         )
 
     # --------------------------------------------------
@@ -116,8 +113,14 @@ class STTModel(nn.Module):
         x = self._cnn_projection(x)
 
         # [B, T/4, 256]
-        # ----- Transformer -----
-        x = self._transformer(x)
+        # ----- Conformer -----
+        input_lengths = torch.full(
+            (B,),
+            T,
+            dtype  = torch.long,
+            device = self._device
+        )
+        x, _ = self._conformer(x, input_lengths)
 
         # [B, T/4, 256]
 

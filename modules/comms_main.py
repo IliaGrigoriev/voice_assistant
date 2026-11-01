@@ -46,6 +46,7 @@ class Main:
         model = STTModel(
             vocab_size=len(VOCABULARY),
             hop_length=HOP_LENGTH,
+            device=self._stt_device,
         ).to(self._stt_device)
         model.load_state_dict(
             torch.load(

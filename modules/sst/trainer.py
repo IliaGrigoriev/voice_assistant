@@ -35,6 +35,7 @@ if __name__ == "__main__":
     model = STTModel(
         vocab_size = VOCAB_SIZE,
         hop_length = HOP_LENGTH,
+        device     = device,
     ).to(device)
 
     # Compute the loss
@@ -55,7 +56,7 @@ if __name__ == "__main__":
         weight_decay=1e-2,
     )  
 
-    NUMBER_OF_EPOCHS = 10
+    NUMBER_OF_EPOCHS = 75
     for epoch in range(NUMBER_OF_EPOCHS):
         model.train() # set the model into the training mode
         total_loss = 0.0

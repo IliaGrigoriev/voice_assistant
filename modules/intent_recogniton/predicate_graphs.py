@@ -11,16 +11,22 @@ class PredicateGraphs:
         "model_parse_xfm_bart_base-v0_1_0.tar.gz"
     )
 
+    # Initialize the predicate graph parser and load its AMR model
+    # ---------------------------------------------------------------------
     def __init__(self):
         self.download_model()
         self._parser = amrlib.load_stog_model()
 
+    # Download the AMR parsing model when it is not installed locally
+    # ---------------------------------------------------------------------
     @classmethod
     def download_model(cls):
         model_path = Path(amrlib.__file__).resolve().parent / "data" / "model_stog"
         if not model_path.exists():
             amrlib.download("model_stog", cls.MODEL_URL)
 
+    # Parse a sentence into a PENMAN AMR graph
+    # ---------------------------------------------------------------------
     def sent_to_graph(self, sentence: str) -> penman.Graph:
         # Convert sentence to AMR (PENMAN notation)
         amr = self._parser.parse_sents([sentence])[0]

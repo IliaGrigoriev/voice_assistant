@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ActionGraph from "./ActionGraph.jsx";
+import AudioTranscriber from "./AudioTranscriber.jsx";
 import { sendAssistantMessage } from "./assistantApi.js";
 import JsonView from "./JsonView.jsx";
 
@@ -125,7 +126,9 @@ export default function App() {
         </div>
       </section>
 
-      <p className="privacy-note">Connected to the local intent-recognition service.</p>
+      <AudioTranscriber />
+
+      <p className="privacy-note">Connected to local intent-recognition and speech-to-text services.</p>
     </main>
   );
 }

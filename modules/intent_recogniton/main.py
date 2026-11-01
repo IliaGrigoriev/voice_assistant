@@ -30,6 +30,8 @@ from .nested_intents import NestedIntents
 from .spacy_action_graph import SpacyActionGraph
 from .semantic_action_graph import SemanticActionGraph
 
+# Parse a sentence and print its combined semantic action graph
+# ---------------------------------------------------------------------
 def parse(sentence = "Remind John to call Mary tomorrow."):
    parser = PredicateGraphs()
    nested_intents = NestedIntents()

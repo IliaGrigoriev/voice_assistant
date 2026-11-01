@@ -6,25 +6,29 @@ import torchaudio
 class STTModel(nn.Module):
 
     # Constructor
-    def __init__(self):
+    def __init__(self, vocab_size, hop_length):
         super().__init__()
+        self._mel = self.audio_to_log_mel(hop_length)
+        self._cnn, self._cnn_projection = self.build_cnn()
+        self._transformer = self.transformer()
+        self._output = self.hidden_to_char_logits(vocab_size)
 
     # --------------------------------------------------
     # 1. Audio → Log-Mel spectrogram
     # --------------------------------------------------
-    def audio_to_log_mel(self):
-        self.mel = torchaudio.transforms.MelSpectrogram(
+    def audio_to_log_mel(self, hop_length):
+        return torchaudio.transforms.MelSpectrogram(
             sample_rate = 16_000,
             n_fft       = 400, # 25 ms
-            hop_length  = 160, # 10 ms
+            hop_length  = hop_length,
             n_mels      = 80
         )
 
     # --------------------------------------------------
     # 2. CNN: local features + 4× subsampling
     # --------------------------------------------------
-    def cnn(self):
-        self.cnn = nn.Sequential(
+    def build_cnn(self):
+        cnn = nn.Sequential(
             nn.Conv2d(
                 in_channels  = 1,
                 out_channels = 32,
@@ -33,7 +37,6 @@ class STTModel(nn.Module):
                 padding      = 1
             ),
             nn.ReLU(),
-
             nn.Conv2d(
                 in_channels  = 32,
                 out_channels = 32,
@@ -44,16 +47,17 @@ class STTModel(nn.Module):
             nn.ReLU()
         )
 
-        # 80 Mel bins → ~20 after 4× subsampling
-        self.cnn_projection = nn.Linear(
+        # 80 Mel bins → ~20 after 4×subsampling
+        cnn_projection = nn.Linear(
             32 * 20,
             256
         )
+        return cnn, cnn_projection
 
     # --------------------------------------------------
     # 3. Transformer
     # --------------------------------------------------
-    def trnsformer(self):
+    def transformer(self):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model         = 256,
             nhead           = 4,
@@ -62,7 +66,7 @@ class STTModel(nn.Module):
             batch_first     = True
         )
 
-        self.transformer = nn.TransformerEncoder(
+        return nn.TransformerEncoder(
             encoder_layer,
             num_layers = 6
         )
@@ -71,7 +75,7 @@ class STTModel(nn.Module):
     # 4. Hidden representation → character logits
     # --------------------------------------------------
     def hidden_to_char_logits(self, vocab_size):
-        self.output = nn.Linear(
+        return nn.Linear(
             256,
             vocab_size
         )
@@ -84,8 +88,7 @@ class STTModel(nn.Module):
         # waveform:
         # [B, audio_samples]
         # ----- Log-Mel -----
-
-        x = self.mel(waveform)
+        x = self._mel(waveform)
 
         # [B, 80, T]
         x = torch.log(x + 1e-6)
@@ -97,7 +100,7 @@ class STTModel(nn.Module):
         # [B, 1, 80, T]
         # ----- CNN -----
 
-        x = self.cnn(x)
+        x = self._cnn(x)
 
         # approximately:
         # [B, 32, 20, T/4]
@@ -110,16 +113,16 @@ class STTModel(nn.Module):
         x = x.reshape(B, T, C * F)
 
         # [B, T/4, 640]
-        x = self.cnn_projection(x)
+        x = self._cnn_projection(x)
 
         # [B, T/4, 256]
         # ----- Transformer -----
-        x = self.transformer(x)
+        x = self._transformer(x)
 
         # [B, T/4, 256]
 
         # ----- Character prediction -----
-        logits = self.output(x)
+        logits = self._output(x)
 
-        # [B, T/4, vocab_size]
+        # [B, T/4, vocab_size] # [batch, time, vocab_size]
         return logits

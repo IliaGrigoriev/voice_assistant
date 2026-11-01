@@ -17,9 +17,13 @@ class SemanticActionGraph:
         },
     }
 
+    # Initialize the semantic graph builder with optional role mappings
+    # ---------------------------------------------------------------------
     def __init__(self, role_map: dict | None = None):
         self.role_map = {**self.ROLE_MAP, **(role_map or {})}
 
+    # Infer the named-entity type for an argument from spaCy tokens
+    # ---------------------------------------------------------------------
     def _ner_type(
         self,
         label: str,
@@ -42,6 +46,8 @@ class SemanticActionGraph:
             return "PERSON"
         return None
 
+    # Determine the semantic node type for a nested AMR argument
+    # ---------------------------------------------------------------------
     def _nested_node_type(self, role: str, predicate: str | None = None) -> str:
         role = role.removeprefix(":")
         if predicate == "mass-quantity":
@@ -54,6 +60,8 @@ class SemanticActionGraph:
             return "time"
         return "entity"
 
+    # Recursively add nested argument nodes and edges to the graph
+    # ---------------------------------------------------------------------
     def _add_nested_arguments(
         self,
         parent_id: str,
@@ -118,6 +126,8 @@ class SemanticActionGraph:
                         edge_keys,
                     )
 
+    # Combine AMR actions and spaCy tokens into one semantic action graph
+    # ---------------------------------------------------------------------
     def combine(
         self,
         amr_actions: list[dict],
@@ -221,6 +231,8 @@ class SemanticActionGraph:
             "edges": edges,
         }
 
+    # Format a semantic action graph as readable JSON
+    # ---------------------------------------------------------------------
     def format(self, graph: dict) -> str:
         node_lines = ",\n".join(
             f"    {json.dumps(node)}" for node in graph["nodes"]

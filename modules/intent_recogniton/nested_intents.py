@@ -26,6 +26,8 @@ class NestedIntents:
                 (attribute.role, attribute.target)
             )
 
+        # Recursively convert an AMR node and its arguments into dictionaries
+        # ---------------------------------------------------------------------
         def visit(node, visited):
             if node in visited:
                 return {"reference": node}

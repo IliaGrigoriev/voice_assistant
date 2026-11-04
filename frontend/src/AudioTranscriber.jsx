@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { transcribeAudio } from "./assistantApi.js";
+import { transcribeAudio, uploadSpeechModel } from "./assistantApi.js";
+
+const DEFAULT_MODEL_PATH = "/home/ilia/Data/vsa/stt_model_exp.pt";
 
 function MicrophoneIcon() {
   return (
@@ -17,6 +19,9 @@ export default function AudioTranscriber() {
   const [audioUrl, setAudioUrl] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [selectedModelPath, setSelectedModelPath] = useState(DEFAULT_MODEL_PATH);
+  const [modelError, setModelError] = useState("");
+  const [isUploadingModel, setIsUploadingModel] = useState(false);
   const [result, setResult] = useState(null);
 
   useEffect(() => () => {
@@ -69,13 +74,31 @@ export default function AudioTranscriber() {
     if (file) retainAudio(file);
   }
 
+  async function chooseModelFile(event) {
+    const [file] = event.target.files;
+    event.target.value = "";
+    if (!file || isUploadingModel) return;
+
+    setIsUploadingModel(true);
+    setModelError("");
+    try {
+      const uploaded = await uploadSpeechModel(file);
+      setSelectedModelPath(uploaded.model_path);
+      setResult(null);
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : "Model upload failed.");
+    } finally {
+      setIsUploadingModel(false);
+    }
+  }
+
   async function handleTranscribe() {
     if (!audioBlob || isTranscribing) return;
 
     setIsTranscribing(true);
     setResult(null);
     try {
-      setResult(await transcribeAudio(audioBlob));
+      setResult(await transcribeAudio(audioBlob, selectedModelPath));
     } catch (error) {
       setResult({ error: error instanceof Error ? error.message : "Transcription failed." });
     } finally {
@@ -95,6 +118,23 @@ export default function AudioTranscriber() {
       </div>
 
       <div className="audio-controls">
+        <div className="model-select">
+          <span>Selected model file</span>
+          <p className="model-current-path" title={selectedModelPath}>
+            {selectedModelPath}
+          </p>
+          <label className={`model-file-button ${isUploadingModel ? "is-disabled" : ""}`}>
+            {isUploadingModel ? "Uploading model…" : "Choose model file"}
+            <input
+              type="file"
+              accept=".pt,application/octet-stream"
+              disabled={isUploadingModel || isRecording || isTranscribing}
+              onChange={chooseModelFile}
+            />
+          </label>
+          {modelError && <small className="model-error">{modelError}</small>}
+        </div>
+
         <div className="record-actions">
           {isRecording ? (
             <button className="record-button is-recording" type="button" onClick={stopRecording}>
@@ -119,7 +159,7 @@ export default function AudioTranscriber() {
         <button
           className="transcribe-button"
           type="button"
-          disabled={!audioBlob || isRecording || isTranscribing}
+          disabled={!audioBlob || !selectedModelPath || isRecording || isTranscribing}
           onClick={handleTranscribe}
         >
           {isTranscribing ? "Transcribing…" : "Transcribe audio"}
@@ -133,7 +173,10 @@ export default function AudioTranscriber() {
           <>
             <span>Transcript</span>
             <p>{result.text || "No speech was decoded."}</p>
-            <small>{result.duration_seconds.toFixed(1)} seconds of audio</small>
+            <small>
+              {result.duration_seconds.toFixed(1)} seconds of audio · {result.architecture}
+              <br />{result.model_path}
+            </small>
           </>
         ) : (
           <p className="empty-state">Your transcript will appear here.</p>

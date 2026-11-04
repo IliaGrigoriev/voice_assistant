@@ -19,7 +19,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -521,6 +522,74 @@ button svg {
   display: grid;
   gap: 12px;
   align-content: center;
+}
+
+.model-select {
+  display: grid;
+  gap: 7px;
+}
+
+.model-select span {
+  color: #66736a;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.model-current-path {
+  min-height: 46px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: hidden;
+  border: 1px solid #cad3c9;
+  border-radius: 13px;
+  color: #304337;
+  background: #fff;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.model-select .model-error {
+  color: #9a3f32;
+  line-height: 1.35;
+}
+
+.model-file-button {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid #cad3c9;
+  border-radius: 11px;
+  color: #405347;
+  background: #f7faf5;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.model-file-button:hover {
+  border-color: #8da28f;
+  background: #eef4ec;
+}
+
+.model-file-button.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.model-file-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .record-actions {

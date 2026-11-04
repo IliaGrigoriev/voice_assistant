@@ -1,11 +1,8 @@
-# Intent Recognition
+# Actions from Intent
 
 This module converts a natural-language command into a semantic action graph.
 It combines an Abstract Meaning Representation (AMR) graph with token,
 dependency, lemma, and named-entity information from spaCy.
-
-> **Note:** The directory name is `intent_recogniton` (without the second
-> `i` in “recognition”). Use that spelling in imports and paths.
 
 ## Processing pipeline
 
@@ -38,13 +35,13 @@ initialized. This requires an internet connection and may take some time.
 Run the example from the repository root:
 
 ```bash
-python3 -m modules.intent_recogniton.main
+python3 -m modules.actions_from_intent.main
 ```
 
 Use the pipeline from Python:
 
 ```python
-from modules.intent_recogniton.main import parse
+from modules.actions_from_intent.main import parse
 
 parse("Remind John to call Mary tomorrow.")
 ```
@@ -54,10 +51,10 @@ The `parse` function prints the combined graph as formatted JSON.
 For direct access to the structured result, compose the individual stages:
 
 ```python
-from modules.intent_recogniton.nested_intents import NestedIntents
-from modules.intent_recogniton.predicate_graphs import PredicateGraphs
-from modules.intent_recogniton.semantic_action_graph import SemanticActionGraph
-from modules.intent_recogniton.spacy_action_graph import SpacyActionGraph
+from modules.actions_from_intent.nested_intents import NestedIntents
+from modules.actions_from_intent.predicate_graphs import PredicateGraphs
+from modules.actions_from_intent.semantic_action_graph import SemanticActionGraph
+from modules.actions_from_intent.spacy_action_graph import SpacyActionGraph
 
 sentence = "Remind John to call Mary tomorrow."
 

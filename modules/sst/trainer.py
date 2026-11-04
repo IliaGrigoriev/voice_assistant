@@ -26,20 +26,30 @@ class Trainer:
 
     def _calculate_loss(self, batch):
         waveforms = batch["waveforms"].to(self.device, non_blocking=True)
+        waveform_lengths = batch["waveform_lengths"].to(
+            self.device,
+            non_blocking=True,
+        )
         targets = batch["encoded_transcripts"].to(
             self.device,
             non_blocking=True,
         )
 
-        logits = self.model(waveforms)
+        if self.model.uses_waveform_lengths:
+            logits, output_lengths = self.model(
+                waveforms,
+                waveform_lengths,
+            )
+        else:
+            logits = self.model(waveforms)
+            output_lengths = self._calculate_output_lengths(
+                batch["waveform_lengths"]
+            )
         log_probs = logits.log_softmax(dim=-1).transpose(0, 1)
-        output_lengths = self._calculate_output_lengths(
-            batch["waveform_lengths"]
-        )
         return self.criterion(
             log_probs,
             targets,
-            output_lengths,
+            output_lengths.cpu(),
             batch["transcript_lengths"],
         )
 

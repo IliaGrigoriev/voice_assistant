@@ -18,6 +18,7 @@ from actions_from_intent.predicate_graphs import PredicateGraphs
 from sst.const import STT_MODEL
 from sst.custom_conformer import CustomConformer
 from sst.stt_model import STTModel
+from sst.text import TextProcessor
 from sst.wav2vec import Wav2Vec
 
 
@@ -81,6 +82,8 @@ class Main:
             map_location="cpu",
             weights_only=True,
         )
+        if "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
 
         architecture = self._infer_model_architecture(state_dict, model_path)
         if architecture == "CustomConformer":
@@ -291,16 +294,7 @@ class Main:
     @staticmethod
     def _decode_ctc(token_ids: list[int]) -> str:
         """Collapse repeated CTC predictions and discard blank tokens."""
-        blank_id = 0
-        characters: list[str] = []
-        previous_id: int | None = None
-
-        for token_id in token_ids:
-            if token_id != blank_id and token_id != previous_id:
-                characters.append(VOCABULARY[token_id])
-            previous_id = token_id
-
-        return "".join(characters).strip()
+        return TextProcessor(VOCABULARY).decode(token_ids)
 
     def _parse_action_graph(self, text: str) -> dict[str, Any]:
         """Run ``main.parse`` and decode the graph it currently prints."""

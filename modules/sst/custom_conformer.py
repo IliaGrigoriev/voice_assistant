@@ -10,11 +10,14 @@ except ImportError:
 
 class CustomConformer(STTModel):
 
+    uses_waveform_lengths = True
+
     # Constructor
     def __init__(self, vocab_size, hop_length, device, dropout=0.1):
         super().__init__()
         self._device = device
         self._dropout = dropout
+        self._hop_length = hop_length
         self._mel = self.audio_to_log_mel(hop_length)
         self._cnn, self._cnn_projection = self.build_cnn()
         self._conformer = self.conformer_layer()
@@ -86,7 +89,7 @@ class CustomConformer(STTModel):
     # --------------------------------------------------
     # 5. Forward
     # --------------------------------------------------
-    def forward(self, waveform):
+    def forward(self, waveform, lengths=None):
 
         # waveform:
         # [B, audio_samples]
@@ -120,13 +123,16 @@ class CustomConformer(STTModel):
 
         # [B, T/4, 256]
         # ----- Conformer -----
-        input_lengths = torch.full(
-            (B,),
-            T,
-            dtype  = torch.long,
-            device = self._device
-        )
-        x, _ = self._conformer(x, input_lengths)
+        if lengths is None:
+            input_lengths = torch.full(
+                (B,), T, dtype=torch.long, device=waveform.device
+            )
+        else:
+            input_lengths = lengths // self._hop_length + 1
+            input_lengths = (input_lengths + 1) // 2
+            input_lengths = (input_lengths + 1) // 2
+            input_lengths = input_lengths.clamp(max=T)
+        x, output_lengths = self._conformer(x, input_lengths)
 
         # [B, T/4, 256]
 
@@ -134,4 +140,4 @@ class CustomConformer(STTModel):
         logits = self._output(x)
 
         # [B, T/4, vocab_size] # [batch, time, vocab_size]
-        return logits
+        return logits, output_lengths

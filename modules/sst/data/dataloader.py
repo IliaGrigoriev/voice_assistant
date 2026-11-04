@@ -10,15 +10,24 @@ from const import LIBRI_SPEECH, MEDDIALOG_AUDIO
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data   import DataLoader as TorchDataLoader
 
+try:
+    from ..text import TextProcessor
+except ImportError:
+    from text import TextProcessor
+
 class Dataloader:
 
     LIBRISPEECH = "librispeech"
     MEDDIALOG_AUDIO = "meddialog-audio"
+    SHUFFLE_SEED = 42
 
     # Constructor
-    def __init__(self, VOCABULARY, dataset_name=LIBRISPEECH):
+    def __init__(self, VOCABULARY, dataset_name=LIBRISPEECH,
+                 voice_manifest_path=None):
         self._VOCABULARY = VOCABULARY
+        self._text = TextProcessor(VOCABULARY)
         self._dataset_name = dataset_name
+        self._voice_manifest_path = voice_manifest_path
         self._meddialog_splits = None
 
         supported_datasets = {self.LIBRISPEECH, self.MEDDIALOG_AUDIO}
@@ -40,7 +49,7 @@ class Dataloader:
     ):
         if self._dataset_name == self.MEDDIALOG_AUDIO:
             raise ValueError(
-                "Use get_train_batches() or get_validation_batches() for "
+                "Use the train, validation, or test batch methods for "
                 "MedDialog-Audio"
             )
 
@@ -59,6 +68,8 @@ class Dataloader:
             pin_memory  = torch.cuda.is_available(),
             persistent_workers = num_workers > 0,
             prefetch_factor = 2 if num_workers > 0 else None,
+            generator=(torch.Generator().manual_seed(self.SHUFFLE_SEED)
+                       if shuffle else None),
         )
 
     def get_train_batches(self, batch_size, num_workers=16):
@@ -94,6 +105,17 @@ class Dataloader:
             download=True,
         )
 
+    def get_test_batches(self, batch_size, num_workers=16):
+        if self._dataset_name == self.MEDDIALOG_AUDIO:
+            return self._get_meddialog_batches(
+                split="test", batch_size=batch_size,
+                num_workers=num_workers, shuffle=False,
+            )
+        return self.get_batches(
+            batch_size=batch_size, num_workers=num_workers,
+            dataset_url="test-clean", shuffle=False, download=True,
+        )
+
     def _load_meddialog_splits(self):
         if self._meddialog_splits is None:
             dataset_root = snapshot_download(
@@ -113,6 +135,32 @@ class Dataloader:
                 cache_dir=MEDDIALOG_AUDIO,
             )
 
+            if self._voice_manifest_path is not None:
+                manifest = load_dataset(
+                    "csv", data_files=str(self._voice_manifest_path),
+                    split="train", cache_dir=MEDDIALOG_AUDIO,
+                )
+                required = {"filename", "voice_id"}
+                if not required.issubset(manifest.column_names):
+                    raise ValueError(
+                        "Voice manifest must contain filename and voice_id"
+                    )
+                voice_by_filename = dict(zip(
+                    manifest["filename"], manifest["voice_id"]
+                ))
+                missing_voices = sorted(
+                    set(samples["filename"]) - set(voice_by_filename)
+                )
+                if missing_voices:
+                    raise ValueError(
+                        f"Voice manifest is missing {len(missing_voices)} "
+                        f"files; first missing file: {missing_voices[0]}"
+                    )
+                samples = samples.add_column(
+                    "voice_id",
+                    [voice_by_filename[name] for name in samples["filename"]],
+                )
+
             if "filename" not in samples.column_names:
                 raise ValueError(
                     "MedDialog metadata does not contain a 'filename' "
@@ -126,7 +174,7 @@ class Dataloader:
 
             audio_root = Path(dataset_root) / "noise-free audio"
             audio_paths = {
-                path.name: str(path)
+                path.name: path
                 for path in audio_root.rglob("*.wav")
             }
             missing_files = sorted(
@@ -140,17 +188,48 @@ class Dataloader:
 
             samples = samples.add_column(
                 "audio",
-                [audio_paths[name] for name in samples["filename"]],
+                [str(audio_paths[name]) for name in samples["filename"]],
             ).cast_column(
                 "audio",
                 Audio(sampling_rate=16_000),
             )
-            print(samples)
-            print(samples.features)
-            self._meddialog_splits = samples.train_test_split(
-                test_size=0.1,
-                seed=42,
+            # Never guess a TTS identity from speaker role, filename, or F0.
+            # A wrong guess silently leaks the same voice across evaluation.
+            voice_columns = (
+                "voice_id", "voice", "tts_voice", "speaker_id"
             )
+            voice_column = next(
+                (name for name in voice_columns
+                 if name in samples.column_names), None
+            )
+            if voice_column is None:
+                raise ValueError(
+                    "MedDialog metadata needs a voice_id column before "
+                    "training. The upstream metadata does not identify its "
+                    "eight TTS voices, so a leak-free split cannot be "
+                    "inferred safely from filenames or acoustic features."
+                )
+            groups = sorted(set(samples[voice_column]))
+            if len(groups) < 3:
+                raise ValueError(
+                    "At least three synthetic voice groups are required for "
+                    "leak-free train/validation/test splits"
+                )
+            # Fixed assignment independent of metadata row ordering.
+            test_groups = {groups[-1]}
+            validation_groups = {groups[-2]}
+            train_groups = set(groups) - validation_groups - test_groups
+            self._meddialog_splits = {
+                "train": samples.filter(
+                    lambda row: row[voice_column] in train_groups
+                ),
+                "validation": samples.filter(
+                    lambda row: row[voice_column] in validation_groups
+                ),
+                "test": samples.filter(
+                    lambda row: row[voice_column] in test_groups
+                ),
+            }
 
         return self._meddialog_splits
 
@@ -162,9 +241,7 @@ class Dataloader:
         shuffle,
     ):
         splits = self._load_meddialog_splits()
-        dataset = (
-            splits["train"] if split == "train" else splits["test"]
-        )
+        dataset = splits[split]
 
         return TorchDataLoader(
             dataset,
@@ -175,6 +252,8 @@ class Dataloader:
             pin_memory=torch.cuda.is_available(),
             persistent_workers=num_workers > 0,
             prefetch_factor=2 if num_workers > 0 else None,
+            generator=(torch.Generator().manual_seed(self.SHUFFLE_SEED)
+                       if shuffle else None),
         )
     
     # Collate batch
@@ -207,17 +286,11 @@ class Dataloader:
                 waveform = waveform.mean(dim=0)
             else:
                 waveform = waveform.squeeze()
-            transcript = transcript.lower()
-
             CHAR_TO_ID = {
                 character: index
                 for index, character in enumerate(self._VOCABULARY)
             }
-            normalized_transcript = "".join(
-                character
-                for character in transcript
-                if character in CHAR_TO_ID
-            )
+            normalized_transcript = self._text.normalize(transcript)
             encoded_transcript = torch.tensor(
                 [CHAR_TO_ID[character] for character in normalized_transcript],
                 dtype=torch.long,
@@ -255,4 +328,11 @@ class Dataloader:
             "waveform_lengths"    : waveform_lengths,
             "encoded_transcripts" : encoded_transcripts,
             "transcript_lengths"  : transcript_lengths,
+            "transcripts"         : [
+                self._text.normalize(
+                    sample["transcription"] if isinstance(sample, dict)
+                    else sample[2]
+                )
+                for sample in samples
+            ],
         }

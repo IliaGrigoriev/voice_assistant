@@ -1,10 +1,12 @@
 import gc
+import hashlib
+import json
 from pathlib import Path
 
 import optuna
 import torch
 
-from const import WAV2VEC_TRIAL_MODELS
+from const import OPTUNA_CHECKPOINTS, WAV2VEC_TRIAL_MODELS
 from custom_conformer import CustomConformer
 from data.dataloader import Dataloader
 from trainer import BLANK_ID, HOP_LENGTH, Trainer, VOCAB_SIZE, VOCABULARY
@@ -27,6 +29,16 @@ class HypoTune:
         )
         self.num_workers = num_workers
         self.dataset_name = dataset_name
+
+    @staticmethod
+    def _trial_checkpoint_folder(trial):
+        encoded = json.dumps(trial.params, sort_keys=True).encode("utf-8")
+        key = hashlib.sha256(encoded).hexdigest()[:16]
+        return Path(OPTUNA_CHECKPOINTS) / key
+
+    def _resume_path(self, trial):
+        path = self._trial_checkpoint_folder(trial) / "interrupted.pt"
+        return path if path.is_file() else None
 
     def objective(self, trial):
         learning_rate = trial.suggest_float(
@@ -68,6 +80,7 @@ class HypoTune:
             device=self.device,
             hop_length=HOP_LENGTH,
             blank_id=BLANK_ID,
+            checkpoint_dir=self._trial_checkpoint_folder(trial),
         )
 
         try:
@@ -76,7 +89,14 @@ class HypoTune:
                 validation_loader=validation_loader,
                 epochs=epochs,
                 trial=trial,
+                resume_from=self._resume_path(trial),
             )
+        except KeyboardInterrupt:
+            trial.set_user_attr(
+                "interrupted_checkpoint",
+                str(self._trial_checkpoint_folder(trial) / "interrupted.pt"),
+            )
+            raise
         except torch.cuda.OutOfMemoryError as error:
             raise optuna.TrialPruned("GPU ran out of memory") from error
         finally:
@@ -111,6 +131,23 @@ class HypoTune:
                 storage=storage,
             )
             study.enqueue_trial(seed_study.best_params)
+
+        waiting_or_complete = {
+            json.dumps(item.params, sort_keys=True)
+            for item in study.trials
+            if item.state in {
+                optuna.trial.TrialState.WAITING,
+                optuna.trial.TrialState.COMPLETE,
+            }
+        }
+        for interrupted in study.trials:
+            checkpoint = interrupted.user_attrs.get("interrupted_checkpoint")
+            params_key = json.dumps(interrupted.params, sort_keys=True)
+            if checkpoint and Path(checkpoint).is_file() \
+                    and params_key not in waiting_or_complete:
+                study.enqueue_trial(interrupted.params)
+                waiting_or_complete.add(params_key)
+                print(f"Re-enqueued interrupted Optuna trial {interrupted.number}")
 
         budgeted_states = {
             optuna.trial.TrialState.COMPLETE,
@@ -189,17 +226,25 @@ class Wav2VecHypoTune(HypoTune):
                 device=self.device,
                 hop_length=HOP_LENGTH,
                 blank_id=BLANK_ID,
+                checkpoint_dir=self._trial_checkpoint_folder(trial),
             )
             validation_loss = trainer.fit(
                 train_loader=train_loader,
                 validation_loader=validation_loader,
                 epochs=epochs,
                 trial=trial,
+                resume_from=self._resume_path(trial),
             )
             self._save_trial_model(model, trial, "complete")
             return validation_loss
         except optuna.TrialPruned:
             self._save_trial_model(model, trial, "pruned")
+            raise
+        except KeyboardInterrupt:
+            trial.set_user_attr(
+                "interrupted_checkpoint",
+                str(self._trial_checkpoint_folder(trial) / "interrupted.pt"),
+            )
             raise
         except torch.cuda.OutOfMemoryError:
             raise optuna.TrialPruned("GPU ran out of memory") from None

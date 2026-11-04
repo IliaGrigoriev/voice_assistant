@@ -12,7 +12,9 @@ and visualize semantic action graphs in a React frontend.
 - Optuna hyperparameter studies stored in SQLite
 - Resumable total trial budgets after interrupted runs
 - LibriSpeech and MedDialog-Audio data loaders
-- Per-trial Wav2Vec checkpoints and a final best-parameter checkpoint
+- Per-epoch resumable checkpoints with sidecar metric files
+- WER/CER evaluation on fixed, voice-disjoint test data
+- Classifier-only, full Wav2Vec2, and from-scratch Conformer modes
 - Local FastAPI endpoints for transcription and intent recognition
 - React interface for recording audio, uploading audio, and selecting an exact
   `.pt` model checkpoint
@@ -27,11 +29,15 @@ voice_assistant/
 │   ├── comms_main.py               FastAPI service
 │   ├── actions_from_intent/        Intent and action-graph pipeline
 │   ├── sst/
+│   │   ├── README.md               STT experiment and recovery guide
 │   │   ├── data/dataloader.py      LibriSpeech and MedDialog loaders
 │   │   ├── stt_model.py            Shared STT interface
 │   │   ├── custom_conformer.py     Custom Conformer implementation
 │   │   ├── wav2vec.py              Wav2Vec2 implementation
 │   │   ├── trainer.py              CTC training loop
+│   │   ├── experiments.py          Four experiment definitions
+│   │   ├── evaluator.py            Cross-domain metrics and result files
+│   │   ├── experiment_runner.py    Selection, stopping, and suite recovery
 │   │   ├── hypo_tune.py            Optuna objectives and study handling
 │   │   ├── main.py                 Training entry point
 │   │   └── const.py                Dataset and checkpoint paths
@@ -133,13 +139,7 @@ at an already loaded path.
 
 ## Speech datasets
 
-Select the active dataset in `modules/sst/main.py`:
-
-```python
-DATASET = Dataloader.MEDDIALOG_AUDIO
-```
-
-Available values are:
+Dataset identifiers used by the experiment configuration are:
 
 ```python
 Dataloader.MEDDIALOG_AUDIO
@@ -193,19 +193,69 @@ source .va/bin/activate
 python3 sst/main.py
 ```
 
-The current `__main__` block runs:
+Configure the experiment runner in `modules/sst/const.py`:
 
 ```python
-fine_tune_wav2vec()
+class ExperimentConfig:
+    EXPERIMENT = "all"  # original, frozen, full, conformer, or all
+    EPOCHS = 10
+    BATCH_SIZE = 2
+    LEARNING_RATE = 1e-4
+    WEIGHT_DECAY = 1e-4
+    NUM_WORKERS = 16
+    GRADIENT_CLIP = 1.0
+    MIXED_PRECISION = True
+    RESUME_FROM = None
+    VOICE_MANIFEST = None
 ```
 
-To train the custom Conformer instead, change the bottom of
-`modules/sst/main.py` to:
+The four experiments are implemented as separate methods on `Experiments`:
+the untouched pretrained Wav2Vec2 baseline, frozen
+Wav2Vec2 with a new CTC head, complete Wav2Vec2 fine-tuning, and a Conformer
+trained from scratch. `main.py` has no command-line training arguments; all
+experiment parameters and paths come from `ExperimentConfig`.
+
+The published MedDialog metadata does not map filenames to the eight TTS voice
+identities. Supply that mapping to prevent voice leakage:
 
 ```python
-if __name__ == "__main__":
-    train_custom_conformer()
+VOICE_MANIFEST = Path("/path/to/meddialog_voice_manifest.csv")
 ```
+
+The CSV must contain `filename` and `voice_id` columns and cover every clean
+audio file. Validation and test each hold out a complete voice identity.
+
+After updating `const.py`, run:
+
+```bash
+python3 sst/main.py
+```
+
+Press `Ctrl+C` (or send `SIGTERM`) to stop safely. The active experiment saves
+`interrupted.pt`, including the model, optimizer, scheduler, AMP scaler, epoch,
+and next batch. With `AUTO_RESUME = True`, the next invocation resumes that
+batch using the same deterministic shuffle. Completed experiments are skipped
+when `SKIP_COMPLETED_EXPERIMENTS = True`.
+
+Optuna uses the same interruption checkpoints under `OPTUNA_CHECKPOINTS`.
+Interrupted parameter sets are re-enqueued automatically when the study is
+opened again, while completed/pruned trials continue to count toward the total
+trial budget.
+
+Each epoch writes a `.pt` bundle containing model, optimizer, scheduler, AMP
+scaler, timing, memory, parameter counts, and metrics. A human-readable
+`.metrics.json` file is saved beside it. Validation reports loss, WER, and CER;
+the fixed test split is evaluated after training. Experiment `results.json`
+files additionally report both MedDialog and LibriSpeech performance, training
+time, peak GPU allocation, inference milliseconds per utterance, parameter
+counts, and in-memory model size.
+
+MedDialog uses deterministic splits grouped by a `voice_id`, `voice`,
+`tts_voice`, or `speaker_id` metadata column. The public metadata does not
+identify which of its eight TTS voices generated each file, so the loader fails
+closed until a `voice_id` column is added; it does not guess identity from the
+speaker role or acoustic features. LibriSpeech uses its standard
+train-clean-100, dev-clean, and test-clean splits.
 
 ### Optuna studies
 
@@ -244,8 +294,8 @@ is the known safe setting on the development machine.
 validation loss, and parameter values. Set its `study_name` argument to inspect
 a specific study.
 
-Optuna currently optimizes CTC validation loss. Word error rate is not computed
-or stored in SQLite.
+Optuna training uses the same normalized transcripts and WER/CER evaluator as
+direct training.
 
 ## Checkpoint locations
 
@@ -330,8 +380,7 @@ CUDA cache clearing.
 ## Current limitations
 
 - Training uses character-level CTC with a small English vocabulary.
-- WER is not currently calculated.
-- Trial training cannot resume mid-epoch.
+- Resume points are at epoch boundaries, not individual batches.
 - Uploaded model files are copied to server storage rather than referenced in
   place, because browsers cannot expose arbitrary local filesystem paths.
 - This is an experimental system and is not intended for clinical use.

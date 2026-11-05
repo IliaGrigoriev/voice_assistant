@@ -1,0 +1,30 @@
+id: process_file
+
+nodes:
+  - id: load
+    action: file.load
+    slots:
+      path:
+        type: str
+        required: true
+
+  - id: transform
+    action: data.transform
+    slots:
+      operation:
+        type: str
+        required: true
+
+  - id: save
+    action: file.save
+    slots:
+      destination:
+        type: str
+        required: true
+
+edges:
+  - source: load
+    target: transform
+
+  - source: transform
+    target: save

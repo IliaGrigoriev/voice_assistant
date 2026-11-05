@@ -13,7 +13,7 @@ and visualize semantic action graphs in a React frontend.
 - Resumable total trial budgets after interrupted runs
 - LibriSpeech and MedDialog-Audio data loaders
 - Per-epoch resumable checkpoints with sidecar metric files
-- WER/CER evaluation on fixed, voice-disjoint test data
+- WER/CER evaluation on fixed dialogue- or voice-disjoint test data
 - Classifier-only, full Wav2Vec2, and from-scratch Conformer modes
 - Local FastAPI endpoints for transcription and intent recognition
 - React interface for recording audio, uploading audio, and selecting an exact
@@ -198,15 +198,20 @@ Configure the experiment runner in `modules/sst/const.py`:
 ```python
 class ExperimentConfig:
     EXPERIMENT = "all"  # original, frozen, full, conformer, or all
-    EPOCHS = 10
+    PROTOCOL_VERSION = "v1"
+    WAV2VEC_EPOCHS = 10
+    CONFORMER_EPOCHS = 50
     BATCH_SIZE = 2
-    LEARNING_RATE = 1e-4
-    WEIGHT_DECAY = 1e-4
+    FROZEN_HEAD_LEARNING_RATE = 1e-4
+    FULL_HEAD_LEARNING_RATE = 1e-4
+    FULL_TRANSFORMER_LEARNING_RATE = 1e-5
+    CONFORMER_LEARNING_RATE = 3e-4
     NUM_WORKERS = 16
     GRADIENT_CLIP = 1.0
     MIXED_PRECISION = True
     RESUME_FROM = None
     VOICE_MANIFEST = None
+    REQUIRE_VOICE_MANIFEST = False
 ```
 
 The four experiments are implemented as separate methods on `Experiments`:
@@ -223,7 +228,11 @@ VOICE_MANIFEST = Path("/path/to/meddialog_voice_manifest.csv")
 ```
 
 The CSV must contain `filename` and `voice_id` columns and cover every clean
-audio file. Validation and test each hold out a complete voice identity.
+audio file. When supplied, validation and test each hold out a complete voice
+identity. Without it, the default deterministic fallback keeps complete
+dialogues within an 80/10/10 split but cannot prevent TTS voices from appearing
+in more than one split. Set `REQUIRE_VOICE_MANIFEST = True` to disable that
+fallback.
 
 After updating `const.py`, run:
 
@@ -246,9 +255,13 @@ Each epoch writes a `.pt` bundle containing model, optimizer, scheduler, AMP
 scaler, timing, memory, parameter counts, and metrics. A human-readable
 `.metrics.json` file is saved beside it. Validation reports loss, WER, and CER;
 the fixed test split is evaluated after training. Experiment `results.json`
-files additionally report both MedDialog and LibriSpeech performance, training
-time, peak GPU allocation, inference milliseconds per utterance, parameter
-counts, and in-memory model size.
+files additionally report designated-domain performance, training time, peak
+GPU allocation, inference milliseconds per utterance, parameter
+counts, and in-memory model size. LibriSpeech retention is reported for the
+Wav2Vec2 experiments; the medical-only Conformer is evaluated on MedDialog.
+
+See [`modules/sst/PARAMETER_SELECTION.md`](modules/sst/PARAMETER_SELECTION.md)
+for the paper-backed protocol and search ranges.
 
 MedDialog uses deterministic splits grouped by a `voice_id`, `voice`,
 `tts_voice`, or `speaker_id` metadata column. The public metadata does not

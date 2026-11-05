@@ -2,3 +2,5 @@ torch
 torchaudio
 tqdm
 optuna
+sentence-transformers
+scikit-learn>=1.3

@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { transcribeAudio, uploadSpeechModel } from "./assistantApi.js";
+import { filterAudio, getSpeechModels, transcribeAudio } from "./assistantApi.js";
 
-const DEFAULT_MODEL_PATH = "/home/ilia/Data/vsa/stt_model_exp.pt";
+function modelLabel(path) {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+const DEFAULT_MODEL_FOLDER = "/home/ilia/Data/vsa/available_models";
+
+function isModelInFolder(path, folder) {
+  const normalizedFolder = folder.trim().replaceAll("\\", "/").replace(/\/$/, "");
+  if (!normalizedFolder) return false;
+
+  const normalizedPath = path.replaceAll("\\", "/");
+  const parent = normalizedPath.slice(0, normalizedPath.lastIndexOf("/"));
+  if (normalizedFolder.startsWith("/")) return parent === normalizedFolder;
+  return normalizedFolder.includes("/")
+    ? parent.endsWith(`/${normalizedFolder}`)
+    : parent.split("/").pop() === normalizedFolder;
+}
 
 function MicrophoneIcon() {
   return (
@@ -12,21 +28,56 @@ function MicrophoneIcon() {
   );
 }
 
-export default function AudioTranscriber() {
+export default function AudioTranscriber({ onTranscription }) {
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
+  const modelFolderInputRef = useRef(null);
   const [audioBlob, setAudioBlob] = useState(null);
   const [audioUrl, setAudioUrl] = useState("");
+  const [filteredAudioBlob, setFilteredAudioBlob] = useState(null);
+  const [filteredAudioUrl, setFilteredAudioUrl] = useState("");
+  const [applyNoiseFilter, setApplyNoiseFilter] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isFiltering, setIsFiltering] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [selectedModelPath, setSelectedModelPath] = useState(DEFAULT_MODEL_PATH);
+  const [selectedModelPath, setSelectedModelPath] = useState("");
+  const [allModelPaths, setAllModelPaths] = useState([]);
+  const [modelPaths, setModelPaths] = useState([]);
+  const [modelFolder, setModelFolder] = useState(DEFAULT_MODEL_FOLDER);
+  const [defaultModelPath, setDefaultModelPath] = useState("");
   const [modelError, setModelError] = useState("");
-  const [isUploadingModel, setIsUploadingModel] = useState(false);
   const [result, setResult] = useState(null);
 
   useEffect(() => () => {
     if (audioUrl) URL.revokeObjectURL(audioUrl);
   }, [audioUrl]);
+
+  useEffect(() => () => {
+    if (filteredAudioUrl) URL.revokeObjectURL(filteredAudioUrl);
+  }, [filteredAudioUrl]);
+
+  useEffect(() => {
+    getSpeechModels()
+      .then(({ default_model_path: defaultPath, model_paths: paths }) => {
+        setAllModelPaths(paths);
+        setDefaultModelPath(defaultPath);
+      })
+      .catch((error) => {
+        setModelError(error instanceof Error ? error.message : "Could not list models.");
+      });
+  }, []);
+
+  useEffect(() => {
+    const paths = allModelPaths.filter((path) => isModelInFolder(path, modelFolder));
+    setModelPaths(paths);
+    setSelectedModelPath((currentPath) => (
+      paths.includes(currentPath)
+        ? currentPath
+        : paths.includes(defaultModelPath)
+          ? defaultModelPath
+          : paths[0] ?? ""
+    ));
+  }, [allModelPaths, defaultModelPath, modelFolder]);
 
   function retainAudio(blob) {
     setAudioUrl((currentUrl) => {
@@ -34,6 +85,11 @@ export default function AudioTranscriber() {
       return URL.createObjectURL(blob);
     });
     setAudioBlob(blob);
+    setFilteredAudioBlob(null);
+    setFilteredAudioUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return "";
+    });
     setResult(null);
   }
 
@@ -74,21 +130,34 @@ export default function AudioTranscriber() {
     if (file) retainAudio(file);
   }
 
-  async function chooseModelFile(event) {
-    const [file] = event.target.files;
+  function chooseModelFolder(event) {
+    const files = Array.from(event.target.files ?? []);
+    const relativePath = files[0]?.webkitRelativePath;
+    if (relativePath) {
+      setModelFolder(relativePath.split("/")[0]);
+    }
     event.target.value = "";
-    if (!file || isUploadingModel) return;
+  }
 
-    setIsUploadingModel(true);
-    setModelError("");
+  function retainFilteredAudio(filtered) {
+    setFilteredAudioBlob(filtered);
+    setFilteredAudioUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return URL.createObjectURL(filtered);
+    });
+  }
+
+  async function handleFilter() {
+    if (!audioBlob || !applyNoiseFilter || isFiltering || isTranscribing) return;
+    setIsFiltering(true);
+    setResult(null);
     try {
-      const uploaded = await uploadSpeechModel(file);
-      setSelectedModelPath(uploaded.model_path);
-      setResult(null);
+      const filtered = await filterAudio(audioBlob);
+      retainFilteredAudio(filtered);
     } catch (error) {
-      setModelError(error instanceof Error ? error.message : "Model upload failed.");
+      setResult({ error: error instanceof Error ? error.message : "Filtering failed." });
     } finally {
-      setIsUploadingModel(false);
+      setIsFiltering(false);
     }
   }
 
@@ -98,7 +167,21 @@ export default function AudioTranscriber() {
     setIsTranscribing(true);
     setResult(null);
     try {
-      setResult(await transcribeAudio(audioBlob, selectedModelPath));
+      let transcriptionAudio = audioBlob;
+      if (applyNoiseFilter) {
+        transcriptionAudio = filteredAudioBlob;
+        if (!transcriptionAudio) {
+          transcriptionAudio = await filterAudio(audioBlob);
+          retainFilteredAudio(transcriptionAudio);
+        }
+      }
+      const transcription = await transcribeAudio(
+        transcriptionAudio,
+        selectedModelPath,
+        false,
+      );
+      setResult(transcription);
+      if (transcription.text) onTranscription(transcription.text);
     } catch (error) {
       setResult({ error: error instanceof Error ? error.message : "Transcription failed." });
     } finally {
@@ -107,31 +190,56 @@ export default function AudioTranscriber() {
   }
 
   return (
-    <section className="transcriber-card" aria-labelledby="transcriber-title">
-      <div className="transcriber-copy">
-        <div className="eyebrow">
-          <span className="status-dot" aria-hidden="true" />
-          Local speech recognition
+    <section className="audio-input" aria-labelledby="audio-input-title">
+      <div className="audio-input-heading">
+        <div>
+          <strong id="audio-input-title">Add from audio</strong>
+          <span>Transcription will fill the editable request above.</span>
         </div>
-        <h2 id="transcriber-title">Audio to text</h2>
-        <p>Record a message or select an audio file, then send it to the local STT model.</p>
+        <MicrophoneIcon />
       </div>
-
       <div className="audio-controls">
         <div className="model-select">
-          <span>Selected model file</span>
-          <p className="model-current-path" title={selectedModelPath}>
-            {selectedModelPath}
-          </p>
-          <label className={`model-file-button ${isUploadingModel ? "is-disabled" : ""}`}>
-            {isUploadingModel ? "Uploading model…" : "Choose model file"}
+          <label className="model-type-field">
+            <span>Available models</span>
+            <select
+              value={selectedModelPath}
+              aria-label="Available speech model"
+              disabled={isRecording || isTranscribing}
+              onChange={(event) => {
+                setSelectedModelPath(event.target.value);
+                setResult(null);
+              }}
+            >
+              {!modelPaths.length && <option value="">No models available</option>}
+              {modelPaths.map((path) => (
+                <option key={path} value={path}>{modelLabel(path)}</option>
+              ))}
+            </select>
+          </label>
+          <div className="model-folder-settings">
+            <span>Looking for models in</span>
+            <code title={modelFolder}>{modelFolder}</code>
+            <div className="model-folder-actions">
+              <button
+                type="button"
+                className="folder-button"
+                onClick={() => modelFolderInputRef.current?.click()}
+              >
+                Choose models folder
+              </button>
+            </div>
             <input
+              ref={modelFolderInputRef}
+              className="directory-input"
               type="file"
               accept=".pt,application/octet-stream"
-              disabled={isUploadingModel || isRecording || isTranscribing}
-              onChange={chooseModelFile}
+              webkitdirectory=""
+              directory=""
+              multiple
+              onChange={chooseModelFolder}
             />
-          </label>
+          </div>
           {modelError && <small className="model-error">{modelError}</small>}
         </div>
 
@@ -156,31 +264,52 @@ export default function AudioTranscriber() {
 
         {audioUrl && <audio className="audio-preview" src={audioUrl} controls />}
 
-        <button
-          className="transcribe-button"
-          type="button"
-          disabled={!audioBlob || !selectedModelPath || isRecording || isTranscribing}
-          onClick={handleTranscribe}
-        >
-          {isTranscribing ? "Transcribing…" : "Transcribe audio"}
-        </button>
+        <label className="filter-option">
+          <input
+            type="checkbox"
+            checked={applyNoiseFilter}
+            disabled={!audioBlob || isFiltering || isTranscribing}
+            onChange={(event) => {
+              setApplyNoiseFilter(event.target.checked);
+              setResult(null);
+            }}
+          />
+          Apply noise filter before transcription
+        </label>
+
+        <div className="processing-actions">
+          <button
+            className="filter-button"
+            type="button"
+            disabled={!audioBlob || !applyNoiseFilter || isRecording || isFiltering || isTranscribing}
+            onClick={handleFilter}
+          >
+            {isFiltering ? "Filtering…" : "Filter audio"}
+          </button>
+          <button
+            className="transcribe-button"
+            type="button"
+            disabled={!audioBlob || !selectedModelPath || isRecording || isFiltering || isTranscribing}
+            onClick={handleTranscribe}
+          >
+            {isTranscribing ? "Transcribing…" : "Transcribe audio"}
+          </button>
+        </div>
+
+        {applyNoiseFilter && filteredAudioUrl && (
+          <div className="filtered-preview">
+            <span>Filtered audio</span>
+            <audio className="audio-preview" src={filteredAudioUrl} controls />
+          </div>
+        )}
       </div>
 
-      <div className={`transcript-output ${result ? "has-result" : ""}`} aria-live="polite">
+      <div className="transcription-status" aria-live="polite">
         {result?.error ? (
           <p className="error">{result.error}</p>
         ) : result ? (
-          <>
-            <span>Transcript</span>
-            <p>{result.text || "No speech was decoded."}</p>
-            <small>
-              {result.duration_seconds.toFixed(1)} seconds of audio · {result.architecture}
-              <br />{result.model_path}
-            </small>
-          </>
-        ) : (
-          <p className="empty-state">Your transcript will appear here.</p>
-        )}
+          <p>{result.text ? "Transcript added above — review or correct it before sending." : "No speech was decoded."}</p>
+        ) : null}
       </div>
     </section>
   );

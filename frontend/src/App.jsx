@@ -49,17 +49,17 @@ export default function App() {
         <div className="workspace-grid">
           <aside className="request-panel">
             <form className="message-form" onSubmit={handleSubmit}>
-              <label htmlFor="assistant-input">Your request</label>
+              <label htmlFor="assistant-input">Intent text</label>
               <div className="input-row">
-                <input
+                <textarea
                   id="assistant-input"
-                  type="text"
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
-                  placeholder="Schedule a call with Alex next Tuesday"
-                  autoComplete="off"
+                  placeholder="Your text goes here…"
+                  rows="5"
                   autoFocus
                 />
+                <AudioTranscriber onTranscription={setInput} />
                 <button type="submit" disabled={!input.trim() || isSubmitting}>
                   <span>{isSubmitting ? "Sending" : "Send"}</span>
                   <ArrowIcon />
@@ -125,8 +125,6 @@ export default function App() {
           </div>
         </div>
       </section>
-
-      <AudioTranscriber />
 
       <p className="privacy-note">Connected to local intent-recognition and speech-to-text services.</p>
     </main>

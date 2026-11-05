@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import warnings
 
 import torch
 import torchaudio
@@ -20,14 +22,16 @@ class Dataloader:
     LIBRISPEECH = "librispeech"
     MEDDIALOG_AUDIO = "meddialog-audio"
     SHUFFLE_SEED = 42
+    _MEDDIALOG_SPLIT_CACHE = {}
 
     # Constructor
     def __init__(self, VOCABULARY, dataset_name=LIBRISPEECH,
-                 voice_manifest_path=None):
+                 voice_manifest_path=None, require_voice_manifest=False):
         self._VOCABULARY = VOCABULARY
         self._text = TextProcessor(VOCABULARY)
         self._dataset_name = dataset_name
         self._voice_manifest_path = voice_manifest_path
+        self._require_voice_manifest = require_voice_manifest
         self._meddialog_splits = None
 
         supported_datasets = {self.LIBRISPEECH, self.MEDDIALOG_AUDIO}
@@ -117,17 +121,38 @@ class Dataloader:
         )
 
     def _load_meddialog_splits(self):
-        if self._meddialog_splits is None:
-            dataset_root = snapshot_download(
-                repo_id="aline-gassenn/MedDialog-Audio",
-                repo_type="dataset",
-                allow_patterns=[
-                    "metadata.csv",
-                    "noise-free audio/**/*.wav",
-                ],
-                local_dir=MEDDIALOG_AUDIO,
+        manifest_key = (
+            str(Path(self._voice_manifest_path).resolve())
+            if self._voice_manifest_path is not None else None
+        )
+        if self._voice_manifest_path is None and self._require_voice_manifest:
+            raise ValueError(
+                "ExperimentConfig.VOICE_MANIFEST is required for MedDialog. "
+                "Set it to a CSV containing filename and voice_id for every "
+                "recording. The public metadata does not provide voice IDs, "
+                "and continuing without them would leak TTS voices across "
+                "training, validation, and test splits."
             )
-            metadata_path = Path(dataset_root) / "metadata.csv"
+        if manifest_key in self._MEDDIALOG_SPLIT_CACHE:
+            self._meddialog_splits = self._MEDDIALOG_SPLIT_CACHE[manifest_key]
+            return self._meddialog_splits
+
+        if self._meddialog_splits is None:
+            dataset_root = Path(MEDDIALOG_AUDIO)
+            metadata_path = dataset_root / "metadata.csv"
+            audio_root = dataset_root / "noise-free audio"
+            if not metadata_path.is_file() or not audio_root.is_dir():
+                dataset_root = Path(snapshot_download(
+                    repo_id="aline-gassenn/MedDialog-Audio",
+                    repo_type="dataset",
+                    allow_patterns=[
+                        "metadata.csv",
+                        "noise-free audio/**/*.wav",
+                    ],
+                    local_dir=MEDDIALOG_AUDIO,
+                ))
+                metadata_path = dataset_root / "metadata.csv"
+                audio_root = dataset_root / "noise-free audio"
             samples = load_dataset(
                 "csv",
                 data_files=str(metadata_path),
@@ -172,7 +197,6 @@ class Dataloader:
                     f"column. Available columns: {samples.column_names}"
                 )
 
-            audio_root = Path(dataset_root) / "noise-free audio"
             audio_paths = {
                 path.name: path
                 for path in audio_root.rglob("*.wav")
@@ -202,34 +226,61 @@ class Dataloader:
                 (name for name in voice_columns
                  if name in samples.column_names), None
             )
-            if voice_column is None:
-                raise ValueError(
-                    "MedDialog metadata needs a voice_id column before "
-                    "training. The upstream metadata does not identify its "
-                    "eight TTS voices, so a leak-free split cannot be "
-                    "inferred safely from filenames or acoustic features."
+            if voice_column is not None:
+                groups = sorted(set(samples[voice_column]))
+                if len(groups) < 3:
+                    raise ValueError(
+                        "At least three synthetic voice groups are required "
+                        "for leak-free train/validation/test splits"
+                    )
+                test_groups = {groups[-1]}
+                validation_groups = {groups[-2]}
+                train_groups = set(groups) - validation_groups - test_groups
+                group_values = samples[voice_column]
+                self._meddialog_splits = {
+                    "train": samples.select([
+                        index for index, value in enumerate(group_values)
+                        if value in train_groups
+                    ]),
+                    "validation": samples.select([
+                        index for index, value in enumerate(group_values)
+                        if value in validation_groups
+                    ]),
+                    "test": samples.select([
+                        index for index, value in enumerate(group_values)
+                        if value in test_groups
+                    ]),
+                }
+            else:
+                warnings.warn(
+                    "MedDialog has no voice IDs; using deterministic "
+                    "dialogue-disjoint 80/10/10 splits. Patient and doctor "
+                    "recordings from one dialogue stay together, but the "
+                    "same TTS voice may occur in multiple splits.",
+                    RuntimeWarning,
                 )
-            groups = sorted(set(samples[voice_column]))
-            if len(groups) < 3:
-                raise ValueError(
-                    "At least three synthetic voice groups are required for "
-                    "leak-free train/validation/test splits"
-                )
-            # Fixed assignment independent of metadata row ordering.
-            test_groups = {groups[-1]}
-            validation_groups = {groups[-2]}
-            train_groups = set(groups) - validation_groups - test_groups
-            self._meddialog_splits = {
-                "train": samples.filter(
-                    lambda row: row[voice_column] in train_groups
-                ),
-                "validation": samples.filter(
-                    lambda row: row[voice_column] in validation_groups
-                ),
-                "test": samples.filter(
-                    lambda row: row[voice_column] in test_groups
-                ),
-            }
+
+                def assign_split(row):
+                    stem = Path(row["filename"]).stem
+                    dialogue_id = stem.split("_")[0].split("-")[0]
+                    digest = hashlib.sha256(
+                        f"{self.SHUFFLE_SEED}:{dialogue_id}".encode("utf-8")
+                    ).digest()
+                    bucket = int.from_bytes(digest[:8], "big") % 100
+                    split = ("train" if bucket < 80 else
+                             "validation" if bucket < 90 else "test")
+                    return {"dataset_split": split}
+
+                samples = samples.map(assign_split)
+                split_values = samples["dataset_split"]
+                self._meddialog_splits = {
+                    split: samples.select([
+                        index for index, value in enumerate(split_values)
+                        if value == split
+                    ])
+                    for split in ("train", "validation", "test")
+                }
+            self._MEDDIALOG_SPLIT_CACHE[manifest_key] = self._meddialog_splits
 
         return self._meddialog_splits
 

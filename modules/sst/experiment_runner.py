@@ -58,6 +58,10 @@ class ExperimentRunner:
                 if (self.config.SKIP_COMPLETED_EXPERIMENTS
                         and result_path.is_file()):
                     print(f"Skipping completed experiment {experiment_name}")
+                    self.experiments.publish_best_model(
+                        experiment_name,
+                        self.config.OUTPUT_DIR / experiment_name,
+                    )
                     results.append(json.loads(
                         result_path.read_text(encoding="utf-8")
                     ))

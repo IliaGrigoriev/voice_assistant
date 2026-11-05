@@ -20,6 +20,7 @@ body {
 
 button,
 input,
+textarea,
 select {
   font: inherit;
 }
@@ -65,7 +66,7 @@ select {
   box-shadow: 0 0 0 4px rgb(95 140 101 / 13%);
 }
 
-.message-form label,
+.message-form > label,
 .output-label {
   display: block;
   margin-bottom: 9px;
@@ -85,7 +86,7 @@ select {
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(310px, 380px) minmax(0, 1fr);
   gap: 24px;
   margin-top: 30px;
   align-items: stretch;
@@ -103,7 +104,8 @@ select {
   width: 100%;
 }
 
-input {
+input,
+textarea {
   min-width: 0;
   flex: 1;
   padding: 15px 17px;
@@ -115,11 +117,20 @@ input {
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-input::placeholder {
+textarea {
+  width: 100%;
+  min-height: 128px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+input::placeholder,
+textarea::placeholder {
   color: #9da59f;
 }
 
-input:focus {
+input:focus,
+textarea:focus {
   border-color: #6f9274;
   box-shadow: 0 0 0 4px rgb(95 140 101 / 13%);
 }
@@ -481,36 +492,47 @@ button svg {
   text-align: center;
 }
 
-.transcriber-card {
-  width: min(1500px, calc(100vw - 40px));
+.audio-input {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1fr) minmax(300px, 1.3fr);
-  gap: 24px;
-  align-items: stretch;
-  padding: clamp(24px, 3vw, 38px);
-  border: 1px solid rgb(53 72 57 / 12%);
-  border-radius: 24px;
-  background: rgb(255 255 252 / 82%);
-  box-shadow: 0 18px 55px rgb(63 67 48 / 10%);
-  backdrop-filter: blur(16px);
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid #d8ded5;
 }
 
-.transcriber-copy h2 {
-  margin: 18px 0 8px;
-  color: #293a2e;
-  font-family: "Manrope", sans-serif;
-  font-size: clamp(1.45rem, 2vw, 2rem);
+.audio-input-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.transcriber-copy p {
-  max-width: 34rem;
-  margin: 0;
-  color: #738077;
-  line-height: 1.55;
+.audio-input-heading > div {
+  display: grid;
+  gap: 3px;
 }
 
-.audio-controls,
-.transcript-output {
+.audio-input-heading strong {
+  color: #34473a;
+  font-size: 0.88rem;
+}
+
+.audio-input-heading span {
+  color: #7a857d;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.audio-input-heading svg {
+  width: 22px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #5f7d65;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.audio-controls {
   min-width: 0;
   padding: 18px;
   border: 1px solid #d8ded5;
@@ -525,6 +547,7 @@ button svg {
 }
 
 .model-select {
+  min-width: 0;
   display: grid;
   gap: 7px;
 }
@@ -552,44 +575,61 @@ button svg {
   overflow-wrap: anywhere;
 }
 
+.model-type-field {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.model-type-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #cad3c9;
+  border-radius: 11px;
+  color: #304337;
+  background: #fff;
+}
+
+.model-folder-settings {
+  display: grid;
+  gap: 7px;
+  padding-top: 5px;
+  border-top: 1px solid #d8ded5;
+}
+
+.model-folder-settings code {
+  padding: 9px 11px;
+  overflow: hidden;
+  border: 1px solid #d8ded5;
+  border-radius: 9px;
+  color: #405347;
+  background: #fff;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-folder-actions {
+  display: block;
+}
+
+.request-panel .folder-button {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+
+.directory-input {
+  display: none;
+}
+
 .model-select .model-error {
   color: #9a3f32;
   line-height: 1.35;
-}
-
-.model-file-button {
-  min-height: 42px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 14px;
-  border: 1px solid #cad3c9;
-  border-radius: 11px;
-  color: #405347;
-  background: #f7faf5;
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.model-file-button:hover {
-  border-color: #8da28f;
-  background: #eef4ec;
-}
-
-.model-file-button.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
-}
-
-.model-file-button input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }
 
 .record-actions {
@@ -598,7 +638,50 @@ button svg {
   gap: 10px;
 }
 
+.processing-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #405347;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.filter-option input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #2f4434;
+}
+
+.filter-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.filtered-preview {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.filtered-preview span {
+  color: #66736a;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .record-button,
+.filter-button,
 .transcribe-button,
 .file-button {
   min-height: 46px;
@@ -649,44 +732,15 @@ button svg {
   height: 42px;
 }
 
-.transcript-output {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border-style: dashed;
-}
-
-.transcript-output.has-result {
-  justify-content: flex-start;
-  border-style: solid;
-  border-color: #d3dfd1;
-  background: #f3f7f1;
-}
-
-.transcript-output > span {
-  margin-bottom: 10px;
-  color: #66736a;
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.transcript-output p {
+.transcription-status p {
   margin: 0;
-  color: #2b3d31;
-  font-size: 1.05rem;
-  line-height: 1.55;
+  color: #647268;
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
-.transcript-output .error {
+.transcription-status .error {
   color: #9a3f32;
-}
-
-.transcript-output small {
-  margin-top: auto;
-  padding-top: 14px;
-  color: #7b867e;
 }
 
 @media (max-width: 900px) {
@@ -710,13 +764,6 @@ button svg {
     width: auto;
   }
 
-  .transcriber-card {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .transcriber-copy {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 560px) {
@@ -738,17 +785,11 @@ button svg {
     width: 100%;
   }
 
-  .transcriber-card {
-    width: calc(100vw - 28px);
-    grid-template-columns: 1fr;
-    border-radius: 22px;
-  }
-
-  .transcriber-copy {
-    grid-column: auto;
-  }
-
   .record-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .processing-actions {
     grid-template-columns: 1fr;
   }
 }

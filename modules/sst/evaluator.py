@@ -20,23 +20,28 @@ class ExperimentEvaluator:
             "num_workers": self.config.NUM_WORKERS,
         }
 
-    def _test_loaders(self):
+    def _test_loaders(self, include_librispeech=True):
         medical = Dataloader(
             VOCABULARY,
             Dataloader.MEDDIALOG_AUDIO,
             voice_manifest_path=self.config.VOICE_MANIFEST,
+            require_voice_manifest=self.config.REQUIRE_VOICE_MANIFEST,
         )
-        librispeech = Dataloader(VOCABULARY, Dataloader.LIBRISPEECH)
-        return {
+        loaders = {
             "medical": medical.get_test_batches(**self.loader_options),
-            "librispeech": librispeech.get_test_batches(**self.loader_options),
         }
+        if include_librispeech:
+            librispeech = Dataloader(VOCABULARY, Dataloader.LIBRISPEECH)
+            loaders["librispeech"] = librispeech.get_test_batches(
+                **self.loader_options
+            )
+        return loaders
 
-    def evaluate_domains(self, trainer):
+    def evaluate_domains(self, trainer, include_librispeech=True):
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
         metrics = {}
-        for domain, loader in self._test_loaders().items():
+        for domain, loader in self._test_loaders(include_librispeech).items():
             domain_metrics = trainer.evaluate(loader)
             metrics.update({
                 f"{domain}_{name}": value

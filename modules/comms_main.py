@@ -1,14 +1,16 @@
 """Main application that connects the frontend to the assistant modules."""
 
 from contextlib import redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
+import wave
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 import torch
 import torchaudio
 import uvicorn
@@ -25,9 +27,8 @@ from sst.wav2vec import Wav2Vec
 VOCABULARY = ["<blank>", " ", "'", *"abcdefghijklmnopqrstuvwxyz"]
 HOP_LENGTH = 160
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
-MAX_MODEL_BYTES = 2 * 1024 * 1024 * 1024
-STT_MODELS_FOLDER = Path(STT_MODEL).parent.resolve()
-UPLOADED_MODELS_FOLDER = STT_MODELS_FOLDER / "uploaded_models"
+STT_MODELS_FOLDER = Path(STT_MODEL).resolve().parents[1]
+DENOISER_CACHE = STT_MODELS_FOLDER / "noise_filter" / "metricgan"
 
 
 class Main:
@@ -42,6 +43,7 @@ class Main:
         self._stt_models = {
             default_model_path: self._load_stt_model(default_model_path)
         }
+        self._denoiser = None
         self.app = FastAPI(title="Voice scheduling assistant")
         self._configure_cors()
         self._register_routes()
@@ -77,13 +79,12 @@ class Main:
     def _load_stt_model(self, requested_path: str) -> STTModel:
         """Infer a checkpoint's architecture and load its trained weights."""
         model_path = self._resolve_model_path(requested_path)
-        state_dict = torch.load(
+        checkpoint = torch.load(
             model_path,
             map_location="cpu",
             weights_only=True,
         )
-        if "model_state_dict" in state_dict:
-            state_dict = state_dict["model_state_dict"]
+        state_dict = self._extract_model_state_dict(checkpoint, model_path)
 
         architecture = self._infer_model_architecture(state_dict, model_path)
         if architecture == "CustomConformer":
@@ -99,6 +100,22 @@ class Main:
         model.load_state_dict(state_dict)
         model.eval()
         return model
+
+    @staticmethod
+    def _extract_model_state_dict(checkpoint, model_path: Path):
+        """Return weights from either a raw state dict or trainer checkpoint."""
+        if not isinstance(checkpoint, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{model_path} does not contain a model state dictionary",
+            )
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        if not isinstance(state_dict, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{model_path} has an invalid model_state_dict",
+            )
+        return state_dict
 
     @staticmethod
     def _infer_model_architecture(state_dict, model_path: Path) -> str:
@@ -118,13 +135,107 @@ class Main:
             self._stt_models[model_path] = self._load_stt_model(model_path)
         return self._stt_models[model_path]
 
+    def _get_denoiser(self):
+        """Load and cache the pretrained speech-enhancement model."""
+        if self._denoiser is None:
+            from speechbrain.inference.enhancement import (
+                SpectralMaskEnhancement,
+            )
+
+            DENOISER_CACHE.mkdir(parents=True, exist_ok=True)
+            self._denoiser = SpectralMaskEnhancement.from_hparams(
+                source="speechbrain/metricgan-plus-voicebank",
+                savedir=str(DENOISER_CACHE),
+                run_opts={"device": str(self._stt_device)},
+            )
+        return self._denoiser
+
+    def _filter_audio(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Enhance a mono 16 kHz waveform before speech recognition."""
+        denoiser = self._get_denoiser()
+        noisy = waveform.to(self._stt_device)
+        lengths = torch.ones(noisy.shape[0], device=self._stt_device)
+        with torch.inference_mode():
+            filtered = denoiser.enhance_batch(noisy, lengths=lengths)
+        return filtered.detach().to(dtype=torch.float32, device="cpu")
+
+    @staticmethod
+    def _wav_bytes(waveform: torch.Tensor, sample_rate: int) -> bytes:
+        """Encode a waveform as an in-memory PCM WAV file."""
+        mono = waveform.squeeze(0).clamp(-1, 1)
+        pcm = (mono * 32767).to(torch.int16).numpy().tobytes()
+        output = BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(pcm)
+        return output.getvalue()
+
+    @staticmethod
+    async def _read_audio(audio: UploadFile) -> torch.Tensor:
+        """Decode uploaded audio and normalize it to mono 16 kHz."""
+        audio_bytes = await audio.read(MAX_AUDIO_BYTES + 1)
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="The audio file is empty.")
+        if len(audio_bytes) > MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=413, detail="Audio must be 25 MB or smaller."
+            )
+
+        suffix = Path(audio.filename or "recording.webm").suffix or ".webm"
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(suffix=suffix, delete=False) as temporary_file:
+                temporary_file.write(audio_bytes)
+                temporary_path = Path(temporary_file.name)
+            waveform, sample_rate = torchaudio.load(temporary_path)
+        except Exception as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The uploaded audio could not be decoded: {error}",
+            ) from error
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+        if waveform.numel() == 0:
+            raise HTTPException(
+                status_code=422, detail="The audio contains no samples."
+            )
+        waveform = waveform.mean(dim=0, keepdim=True)
+        if sample_rate != 16_000:
+            waveform = torchaudio.functional.resample(
+                waveform, orig_freq=sample_rate, new_freq=16_000
+            )
+        return waveform
+
+    async def filter_audio(
+        self, audio: UploadFile = File(...),
+    ) -> Response:
+        """Return a filtered recording as a browser-playable WAV response."""
+        waveform = await self._read_audio(audio)
+        try:
+            filtered = self._filter_audio(waveform)
+        except Exception as error:
+            raise HTTPException(
+                status_code=503, detail=f"Audio filtering failed: {error}"
+            ) from error
+        return Response(
+            content=self._wav_bytes(filtered, 16_000),
+            media_type="audio/wav",
+        )
+
     def list_stt_models(self) -> dict[str, Any]:
-        """List selectable checkpoints under the configured model folder."""
+        """List selectable checkpoints under the configured model root."""
         default_path = str(Path(STT_MODEL).resolve())
         model_paths = sorted(
             str(path.resolve())
             for path in STT_MODELS_FOLDER.rglob("*.pt")
             if path.is_file()
+            and "uploaded_models" not in path.relative_to(
+                STT_MODELS_FOLDER
+            ).parts
         )
         if default_path in model_paths:
             model_paths.remove(default_path)
@@ -132,66 +243,6 @@ class Main:
         return {
             "default_model_path": default_path,
             "model_paths": model_paths,
-        }
-
-    async def upload_stt_model(
-        self,
-        model_file: UploadFile = File(...),
-    ) -> dict[str, str]:
-        """Store and validate a checkpoint selected in the browser."""
-        filename = Path(model_file.filename or "").name
-        if not filename or Path(filename).suffix != ".pt":
-            raise HTTPException(
-                status_code=400,
-                detail="Choose a .pt model checkpoint.",
-            )
-
-        UPLOADED_MODELS_FOLDER.mkdir(parents=True, exist_ok=True)
-        destination = UPLOADED_MODELS_FOLDER / filename
-        counter = 1
-        while destination.exists():
-            destination = UPLOADED_MODELS_FOLDER / (
-                f"{Path(filename).stem}_{counter}.pt"
-            )
-            counter += 1
-
-        bytes_written = 0
-        try:
-            with destination.open("xb") as model_output:
-                while chunk := await model_file.read(8 * 1024 * 1024):
-                    bytes_written += len(chunk)
-                    if bytes_written > MAX_MODEL_BYTES:
-                        raise HTTPException(
-                            status_code=413,
-                            detail="Model files must be 2 GB or smaller.",
-                        )
-                    model_output.write(chunk)
-
-            state_dict = torch.load(
-                destination,
-                map_location="cpu",
-                weights_only=True,
-            )
-            architecture = self._infer_model_architecture(
-                state_dict,
-                destination,
-            )
-            del state_dict
-        except HTTPException:
-            destination.unlink(missing_ok=True)
-            raise
-        except Exception as error:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=422,
-                detail=f"The selected file is not a compatible model: {error}",
-            ) from error
-        finally:
-            await model_file.close()
-
-        return {
-            "model_path": str(destination.resolve()),
-            "architecture": architecture,
         }
 
     def _configure_cors(self) -> None:
@@ -215,14 +266,14 @@ class Main:
             methods=["POST"],
         )
         self.app.add_api_route(
+            "/filter-audio",
+            self.filter_audio,
+            methods=["POST"],
+        )
+        self.app.add_api_route(
             "/stt-models",
             self.list_stt_models,
             methods=["GET"],
-        )
-        self.app.add_api_route(
-            "/stt-models/upload",
-            self.upload_stt_model,
-            methods=["POST"],
         )
 
     def recognize(self, text: str) -> dict[str, Any]:
@@ -233,41 +284,18 @@ class Main:
         self,
         audio: UploadFile = File(...),
         model_path: str = STT_MODEL,
+        apply_filter: bool = False,
     ) -> dict[str, Any]:
         """Decode uploaded browser audio and transcribe it with the STT model."""
-        audio_bytes = await audio.read(MAX_AUDIO_BYTES + 1)
-        if not audio_bytes:
-            raise HTTPException(status_code=400, detail="The audio file is empty.")
-        if len(audio_bytes) > MAX_AUDIO_BYTES:
-            raise HTTPException(status_code=413, detail="Audio must be 25 MB or smaller.")
-
-        suffix = Path(audio.filename or "recording.webm").suffix or ".webm"
-        temporary_path: Path | None = None
-        try:
-            with NamedTemporaryFile(suffix=suffix, delete=False) as temporary_file:
-                temporary_file.write(audio_bytes)
-                temporary_path = Path(temporary_file.name)
-
-            waveform, sample_rate = torchaudio.load(temporary_path)
-        except Exception as error:
-            raise HTTPException(
-                status_code=422,
-                detail=f"The uploaded audio could not be decoded: {error}",
-            ) from error
-        finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
-
-        if waveform.numel() == 0:
-            raise HTTPException(status_code=422, detail="The audio contains no samples.")
-
-        waveform = waveform.mean(dim=0, keepdim=True)
-        if sample_rate != 16_000:
-            waveform = torchaudio.functional.resample(
-                waveform,
-                orig_freq=sample_rate,
-                new_freq=16_000,
-            )
+        waveform = await self._read_audio(audio)
+        if apply_filter:
+            try:
+                waveform = self._filter_audio(waveform)
+            except Exception as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Audio filtering failed: {error}",
+                ) from error
 
         resolved_model_path = str(self._resolve_model_path(model_path))
         stt_model = self._get_stt_model(resolved_model_path)
